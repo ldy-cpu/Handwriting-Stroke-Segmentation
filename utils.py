@@ -4,8 +4,134 @@ from medpy import metric
 from scipy.ndimage import zoom
 import torch.nn as nn
 import SimpleITK as sitk
+# import torchmetrics
+import configg
 
 
+
+class DiceLoss_hard(nn.Module):
+    def __init__(self, n_classes):
+        super(DiceLoss_hard, self).__init__()
+        self.n_classes = n_classes
+
+    def _one_hot_encoder(self, input_tensor):
+        tensor_list = []
+        for i in range(self.n_classes):
+            temp_prob = input_tensor == i  # * torch.ones_like(input_tensor)
+            tensor_list.append(temp_prob.unsqueeze(1))
+        output_tensor = torch.cat(tensor_list, dim=1)
+        return output_tensor.float()
+
+    def _dice_loss(self, score, target):
+        # target = 1 - target
+        # score = 1 - score
+        target = target.float()
+        smooth = 1e-5
+
+        intersect = torch.sum(score * target)
+        y_sum = torch.sum(target * target)
+        z_sum = torch.sum(score * score)
+        loss = (2 * intersect + smooth) / (z_sum + y_sum + smooth)
+        loss = 1 - loss
+        return loss
+
+    def acc(self, score, target):
+        correct = (score == target)
+        correct = correct.float().sum()
+        ac = correct/(224*224*8)
+        assert ac<=1,'acc > 1'
+        return ac
+
+
+    def forward(self, inputs, target, weight=None, softmax=False):
+        if softmax:
+            inputs = torch.softmax(inputs, dim=1)
+        target = self._one_hot_encoder(target)
+        if weight is None:
+            weight = [1] * self.n_classes
+        assert inputs.size() == target.size(), 'predict {} & target {} shape do not match'.format(inputs.size(),
+                                                                                                  target.size())
+
+        # class_wise_dice = []
+        # loss = 0.0
+
+        # for i in range(0, self.n_classes):
+            # dice = self._dice_loss(inputs[:, i], target[:, i])
+            # class_wise_dice.append(1.0 - dice.item())
+            # loss += dice * weight[i]
+
+        score_hard = (inputs > 0.5).float()
+        # score_hard = 1-score_hard   ##反色
+        # target = 1-target
+        dice = self._dice_loss(score_hard[:, 0], target[:, 0])
+        # class_wise_dice.append(1.0 - dice.item())
+        accuracy = self.acc(score_hard[:, 0],target[:, 0])
+
+        # score_hard = inputs
+        # # score_hard = 1-score_hard   ##反色
+        # # target = 1-target
+        # dice = self._dice_loss(score_hard[:, 0], target[:, 0])
+        # # class_wise_dice.append(1.0 - dice.item())
+        # accuracy = self.acc(score_hard[:, 0], target[:, 0])
+
+        return dice, accuracy
+
+class DiceLoss_multi_hard(nn.Module):
+
+    def __init__(self, n_classes):
+        super(DiceLoss_multi_hard, self).__init__()
+        self.n_classes = n_classes
+
+    def _one_hot_encoder(self, input_tensor):
+        tensor_list = []
+        for i in range(self.n_classes):
+            temp_prob = input_tensor == i  # * torch.ones_like(input_tensor)
+            tensor_list.append(temp_prob.unsqueeze(1))
+        output_tensor = torch.cat(tensor_list, dim=1)
+        return output_tensor.float()
+
+
+    def acc(self, score, target):
+        correct = (score == target)
+        correct = correct.float().sum()
+        ac = correct/(224*224*8*configg.num_classes)
+        assert ac<=1,'acc > 1'
+        return ac
+
+    def _dice_loss(self, score, target):
+        # 逆转颜色
+        target = 1 - target
+        score = 1 - score
+        target = target.float()
+
+        smooth = 1e-5
+        intersect = torch.sum(score * target)
+        y_sum = torch.sum(target * target)
+        z_sum = torch.sum(score * score)
+        loss = (2 * intersect + smooth) / (z_sum + y_sum + smooth)
+        loss = 1 - loss
+        return loss
+
+    def forward(self, inputs, target, weight=None, softmax=False):
+        if softmax:
+            inputs = torch.softmax(inputs, dim=1)
+        # target = self._one_hot_encoder(target)
+
+        score_hard = (inputs > 0.5).float()
+        if weight is None:
+            weight = [1] * self.n_classes
+        assert inputs.size() == target.size(), 'predict {} & target {} shape do not match'.format(inputs.size(),
+                                                                                                  target.size())
+        class_wise_dice = []
+        loss = 0.0
+        for i in range(0, self.n_classes):
+            dice = self._dice_loss(score_hard[:, i], target[:, i])
+            class_wise_dice.append(1.0 - dice.item())
+            loss += dice * weight[i]
+
+        accuracy = self.acc(score_hard[:], target[:])
+
+        return loss / self.n_classes, accuracy
 class DiceLoss(nn.Module):
     def __init__(self, n_classes):
         super(DiceLoss, self).__init__()
@@ -20,6 +146,8 @@ class DiceLoss(nn.Module):
         return output_tensor.float()
 
     def _dice_loss(self, score, target):
+        # target = 1 - target
+        # score = 1 - score
         target = target.float()
         smooth = 1e-5
         intersect = torch.sum(score * target)
@@ -36,6 +164,57 @@ class DiceLoss(nn.Module):
         if weight is None:
             weight = [1] * self.n_classes
         assert inputs.size() == target.size(), 'predict {} & target {} shape do not match'.format(inputs.size(), target.size())
+        class_wise_dice = []
+        loss = 0.0
+
+
+        # for i in range(0, self.n_classes):
+        #     dice = self._dice_loss(inputs[:, i], target[:, i])
+        #     class_wise_dice.append(1.0 - dice.item())
+        #     loss += dice * weight[i]
+
+        # score = 1-inputs
+        # target = 1-target
+
+        dice = self._dice_loss(inputs[:, 0], target[:, 0])
+        return dice
+
+class DiceLoss_multi(nn.Module):
+    def __init__(self, n_classes):
+        super(DiceLoss_multi, self).__init__()
+        self.n_classes = n_classes
+
+    def _one_hot_encoder(self, input_tensor):
+        tensor_list = []
+        for i in range(self.n_classes):
+            temp_prob = input_tensor == i  # * torch.ones_like(input_tensor)
+            tensor_list.append(temp_prob.unsqueeze(1))
+        output_tensor = torch.cat(tensor_list, dim=1)
+        return output_tensor.float()
+
+    def _dice_loss(self, score, target):
+        #逆转颜色
+        target = 1 - target
+        score = 1 - score
+        target = target.float()
+
+        smooth = 1e-5
+        intersect = torch.sum(score * target)
+        y_sum = torch.sum(target * target)
+        z_sum = torch.sum(score * score)
+        loss = (2 * intersect + smooth) / (z_sum + y_sum + smooth)
+        loss = 1 - loss
+        return loss
+
+    def forward(self, inputs, target, weight=None, softmax=False):
+        if softmax:
+            inputs = torch.softmax(inputs, dim=1)
+        # target = self._one_hot_encoder(target)
+
+        if weight is None:
+            weight = [1] * self.n_classes
+        assert inputs.size() == target.size(), 'predict {} & target {} shape do not match'.format(inputs.size(),
+                                                                                                  target.size())
         class_wise_dice = []
         loss = 0.0
         for i in range(0, self.n_classes):
@@ -100,3 +279,33 @@ def test_single_volume(image, label, net, classes, patch_size=[256, 256], test_s
         sitk.WriteImage(img_itk, test_save_path + '/'+ case + "_img.nii.gz")
         sitk.WriteImage(lab_itk, test_save_path + '/'+ case + "_gt.nii.gz")
     return metric_list
+
+
+def val_loss(gen, val_loader, epoch, folder,ce_loss,dice_loss):
+
+    # x, y = next(iter(val_loader))
+
+    gen.eval()
+    with torch.no_grad():
+        no = 0
+        IOU = 0
+        for x, y in val_loader:
+            x ,y= x.to(config.DEVICE),y.to(config.DEVICE)
+            gtarr = save_image(y * 0.5 + 0.5, folder + f"/{no}_label.png")
+            gtarr = gtarr.convert("L")
+            gtarr = np.array(gtarr)
+            if config.attention == True:
+                y_fake, cam = gen(x)
+                save_image(cam, folder + f"/{no}_cam.png")
+            else:
+                y_fake = gen(x)
+            y_fake = y_fake * 0.5 + 0.5  # remove normalization#
+            fakearr = save_image(y_fake, folder + f"/{no}_y_gen_{epoch}.png")
+            fakearr = fakearr.convert("L")
+            fakearr = np.array(fakearr)
+            # save_image(x * 0.5 + 0.5, folder + f"/input_{epoch}.png")
+            IOU = IOU + judge(gtarr,fakearr)
+            no += 1
+    mIOU = IOU/no
+    gen.train()
+    return mIOU

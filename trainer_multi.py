@@ -8,15 +8,13 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-
 from PIL import Image
 from tensorboardX import SummaryWriter
 from torch.nn.modules.loss import CrossEntropyLoss,BCELoss
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from utils import DiceLoss,DiceLoss_multi, DiceLoss_hard
+from utils import DiceLoss,DiceLoss_multi, DiceLoss_multi_hard
 from torchvision import transforms
-import configg
 
 
 def worker_init_fn(worker_id):
@@ -49,7 +47,7 @@ def trainer_synapse(args, model, snapshot_path):
     print("The length of val set is: {}".format(len(db_val)))
 
     valloader = DataLoader(db_val, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True,
-                             worker_init_fn=worker_init_fn,drop_last=True)
+                             worker_init_fn=worker_init_fn)
 
 
 
@@ -59,14 +57,14 @@ def trainer_synapse(args, model, snapshot_path):
     model.train()
     ######################################################################################################################################
     #单标签分类
-    ce_loss = CrossEntropyLoss()
-    dice_loss = DiceLoss(num_classes)
-    dice_loss_hard = DiceLoss_hard(num_classes)
+    # ce_loss = CrossEntropyLoss()
+    # dice_loss = DiceLoss(num_classes)
     ##########################################################################################################################################
     ######################################################################################################################################
     # 多标签分类
-    # ce_loss = BCELoss()
-    # dice_loss = DiceLoss_multi(num_classes)
+    ce_loss = BCELoss()
+    dice_loss = DiceLoss_multi(num_classes)
+    dice_loss_hard = DiceLoss_multi_hard(num_classes)
     ##########################################################################################################################################
     optimizer = optim.SGD(model.parameters(), lr=base_lr, momentum=0.9, weight_decay=0.0001)
     writer = SummaryWriter(snapshot_path + '/log')
@@ -76,26 +74,24 @@ def trainer_synapse(args, model, snapshot_path):
     logging.info("{} iterations per epoch. {} max iterations ".format(len(trainloader), max_iterations))
     best_performance = 0.0
     iterator = tqdm(range(max_epoch), ncols=70)
-    # sigmoid = nn.Sigmoid()
+    sigmoid = nn.Sigmoid()
     for epoch_num in iterator:
         for i_batch, sampled_batch in enumerate(trainloader):
             image_batch, label_batch = sampled_batch['image'], sampled_batch['label']
-            if configg.npy == True:
-                label_batch = label_batch.squeeze(1)
             image_batch, label_batch = image_batch.cuda(), label_batch.cuda()
             outputs = model(image_batch)
             soft = True
 ##########################################################################################################################################
             #多标签分类
-            # outputs = sigmoid(outputs)
-            # soft = False
-            # loss_ce = ce_loss(outputs, label_batch[:].float())
+            outputs = sigmoid(outputs)
+            soft = False
+            loss_ce = ce_loss(outputs, label_batch[:].float())
 ##########################################################################################################################################
             # 单标签
-            loss_ce = ce_loss(outputs, label_batch[:].long())
+            # loss_ce = ce_loss(outputs, label_batch[:])
 #################################################################################
             # loss_dice = dice_loss(outputs, label_batch, weight=[1.8, 0.2], softmax=soft)   #单标签分类时用的权重比例
-            loss_dice = dice_loss(outputs[:], label_batch[:], softmax=soft)
+            loss_dice = dice_loss(outputs, label_batch, softmax=soft)
             loss = 0.5 * loss_ce + 0.5 * loss_dice
             optimizer.zero_grad()
             loss.backward()
@@ -120,7 +116,7 @@ def trainer_synapse(args, model, snapshot_path):
             #     labs = label_batch[1, ...].unsqueeze(0) * 50
             #     writer.add_image('train/GroundTruth', labs, iter_num)
 
-        # save_interval = 30  # int(max_epoch/6)
+        save_interval = 30  # int(max_epoch/6)
         # if epoch_num > int(max_epoch / 2) and (epoch_num + 1) % save_interval == 0:
         #     save_mode_path = os.path.join(snapshot_path, 'epoch_' + str(epoch_num) + '.pth')
         #     torch.save(model.state_dict(), save_mode_path)
@@ -140,12 +136,11 @@ def trainer_synapse(args, model, snapshot_path):
                 # total_loss = 0
                 for i_batch, sampled_batch in enumerate(valloader):
                     image_batch, label_batch = sampled_batch['image'], sampled_batch['label']
-                    if configg.npy == True:
-                        label_batch = label_batch.squeeze(1)
                     image_batch, label_batch = image_batch.cuda(), label_batch.cuda()
                     outputs = model(image_batch)
-                    # outputs = sigmoid(outputs)
+                    outputs = sigmoid(outputs)
                     # loss_ce = ce_loss(outputs, label_batch[:].float())
+
                     loss_dice_hard, acc = dice_loss_hard(outputs[:], label_batch[:], softmax=soft)
 
                     loss_dice = dice_loss(outputs[:], label_batch[:], softmax=soft)
@@ -155,6 +150,8 @@ def trainer_synapse(args, model, snapshot_path):
                     print("loss_dice:{}".format(loss_dice))
 
 
+
+
                     # loss = 0.5 * loss_ce + 0.5 * loss_dice
                     total_loss_dice = (loss_dice_hard + total_loss_dice)
                     total_acc = (acc + total_acc)
@@ -162,7 +159,7 @@ def trainer_synapse(args, model, snapshot_path):
                     i += 1
 
             total_loss_dice = total_loss_dice / i
-            total_acc = total_acc/i
+            total_acc = total_acc / i
             dice = 1 - total_loss_dice
                 # total_loss = total_loss / i
 
